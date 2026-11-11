@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Durable Workflow Engine — Visual Walkthrough</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <noscript>
+    <style>
+      /* Without JavaScript, show the deck as a readable document. */
+      .slide {
+        display: flex !important;
+        height: auto !important;
+        min-height: 100dvh;
+        overflow: visible !important;
+        padding: clamp(28px, 6vmin, 80px) clamp(20px, 5vw, 64px);
+        border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+      }
+      .slide-inner { max-height: none; }
+      .progress, .controls, .hint, .notes { display: none !important; }
+    </style>
+  </noscript>
+</head>
+<body class="presenting">
+
+  <div class="progress" aria-hidden="true"><div class="progress-bar" id="progress-bar"></div></div>
+
+  <main class="deck" id="deck">
+
+    <!-- 01 · TITLE -->
+    <section class="slide active" id="slide-1" data-title="Title">
+      <div class="slide-inner title-slide">
+        <div class="orb orb-a" aria-hidden="true"></div>
+        <div class="orb orb-b" aria-hidden="true"></div>
+        <div class="eyebrow">Software Verification · Project Walkthrough</div>
+        <h1>Durable<br><span class="gradient-text">Workflow Engine</span></h1>
+        <p class="lede">
+          Fault-tolerant execution of long-running, multi-step business processes —
+          with durable state, crash recovery, retries, and saga compensation.
+        </p>
+        <div class="badge-row">
+          <span class="badge">TypeScript</span>
+          <span class="badge">Node.js</span>
+          <span class="badge">SQLite · WAL</span>
+          <span class="badge">Fastify</span>
+          <span class="badge">25 tests</span>
+        </div>
+        <div class="title-foot">
+          <span class="dot"></span>
+          Working vertical slice · <code>npm run dev</code> · <code>./scripts/demo.sh</code>
+        </div>
+      </div>
+      <aside class="notes">
+        This project asks a simple question: what happens when a multi-step backend
+        process crashes halfway through? The engine is a durable state machine that
+        makes progress survive process death, retries safely, and rolls back completed
+        work when a later step cannot succeed.
+      </aside>
+    </section>
+
+    <!-- 02 · PROBLEM -->
+    <section class="slide" id="slide-2" data-title="The problem">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">02 · The problem</div>
+          <h2>A workflow is easy<br>until something crashes</h2>
+        </div>
+        <div class="grid-2 problem-grid">
+          <div class="panel">
+            <div class="panel-label">Order-processing workflow</div>
+            <div class="order-flow">
+              <div class="order-step">
+                <span class="step-num">1</span>
+                <div class="order-copy"><strong>Reserve inventory</strong><small>warehouse service</small></div>
+                <span class="tag tag-ok">side effect</span>
+              </div>
+              <div class="connector" aria-hidden="true"></div>
+              <div class="order-step">
+                <span class="step-num">2</span>
+                <div class="order-copy"><strong>Process payment</strong><small>payment gateway</small></div>
+                <span class="tag tag-ok">side effect</span>
+              </div>
+              <div class="connector" aria-hidden="true"></div>
+              <div class="order-step">
+                <span class="step-num">3</span>
+                <div class="order-copy"><strong>Arrange shipping</strong><small>logistics provider</small></div>
+                <span class="tag tag-ok">side effect</span>
+              </div>
+            </div>
+          </div>
+          <div class="stack">
+            <div class="failure-card">
+              <span class="failure-icon">✕</span>
+              <div><strong>Crash after payment</strong><p>State is lost — the order never ships, but the customer was charged.</p></div>
+            </div>
+            <div class="failure-card">
+              <span class="failure-icon">↻</span>
+              <div><strong>Timeout, then retry</strong><p>A blind retry charges the customer twice.</p></div>
+            </div>
+            <div class="failure-card">
+              <span class="failure-icon">⏸</span>
+              <div><strong>Shipping rejects the order</strong><p>Inventory stays reserved and payment stays captured forever.</p></div>
+            </div>
+          </div>
+        </div>
+        <div class="callout">
+          <span class="callout-kicker">The core challenge</span>
+          Execute side effects <em>exactly once in effect</em>, while tolerating at-least-once delivery and arbitrary crashes.
+        </div>
+      </div>
+      <aside class="notes">
+        Every step here touches an external system and has a real side effect. A crash
+        can happen before the call, after the call, or while waiting for the response.
+        The hard part is not making the happy path work — it is making every failure
+        point safe.
+      </aside>
+    </section>
+
+    <!-- 03 · GUARANTEES -->
+    <section class="slide" id="slide-3" data-title="Three guarantees">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">03 · Design goals</div>
+          <h2>Three guarantees</h2>
+        </div>
+        <div class="grid-3 guarantee-grid">
+          <article class="card guarantee">
+            <div class="icon-wrap teal">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg>
+            </div>
+            <h3>Durability</h3>
+            <p>Every state transition is committed to SQLite <strong>before</strong> the next action starts.</p>
+            <div class="card-foot">write-ahead state</div>
+          </article>
+          <article class="card guarantee">
+            <div class="icon-wrap amber">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/></svg>
+            </div>
+            <h3>Recovery</h3>
+            <p>A crashed worker's lease expires. Another worker reclaims the step and resumes from the last checkpoint.</p>
+            <div class="card-foot">leases + fencing</div>
+          </article>
+          <article class="card guarantee">
+            <div class="icon-wrap violet">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="12" r="3"/><path d="M11 12h10"/><path d="M18 12v3"/><path d="M15 12v2"/></svg>
+            </div>
+            <h3>Idempotency</h3>
+            <p>Every step gets a stable key. Re-executing a failed step returns the original result instead of repeating the effect.</p>
+            <div class="card-foot">effectively once</div>
+          </article>
+        </div>
+        <div class="formula">
+          <span>at-least-once execution</span>
+          <span class="formula-op">+</span>
+          <span>idempotent effects</span>
+          <span class="formula-op">=</span>
+          <span class="formula-result">effectively-once outcome</span>
+        </div>
+      </div>
+      <aside class="notes">
+        These three guarantees reinforce each other. Durability lets us recover;
+        leases let another worker take over; idempotency makes the retry safe.
+      </aside>
+    </section>
+
+    <!-- 04 · IDEMPOTENCY -->
+    <section class="slide" id="slide-4" data-title="Idempotency">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">04 · Concept 1 — Idempotency</div>
+          <h2>Repeat without<br>repeating the effect</h2>
+        </div>
+        <p class="lede">
+          Idempotency means repeating an operation has the same effect as doing it
+          once. The engine can only promise at-least-once execution; a stable key
+          lets each downstream service collapse retries into one result.
+        </p>
+        <div class="grid-2 idem-grid">
+          <div class="code-card">
+            <div class="code-head"><span class="code-dot red"></span><span class="code-dot amber"></span><span class="code-dot green"></span><span class="code-title">workflow-service.ts · stable key per step</span></div>
+            <pre><code><span class="kw">const</span> steps = workflow.steps.map((step, index) => ({
+  id: randomUUID(),
+  index,
+  name: step.name,
+  idempotencyKey: <span class="str">`${runId}:${index}:${step.name}`</span>,
+  retry: resolveRetryPolicy(workflow, step),
+}));
+<span class="c">// compensation reuses the key with ":compensate"</span></code></pre>
+          </div>
+          <div class="code-card">
+            <div class="code-head"><span class="code-dot red"></span><span class="code-dot amber"></span><span class="code-dot green"></span><span class="code-title">services.ts · replay returns the first result</span></div>
+            <pre><code><span class="kw">const</span> existing = <span class="kw">this</span>.charges.get(request.idempotencyKey);
+<span class="kw">if</span> (existing) {
+  <span class="kw">return</span> { paymentId: existing.paymentId, amount: existing.amount };
+}
+<span class="c">// otherwise: charge once, then store under the same key</span></code></pre>
+          </div>
+        </div>
+        <div class="grid-3 recovery-notes">
+          <div class="mini-note"><strong>Attempt 1</strong><span>Charge succeeds; the worker crashes before saving the step result.</span></div>
+          <div class="mini-note"><strong>Attempt 2</strong><span>The retry sends the same key and receives the original <code>pay_1</code>.</span></div>
+          <div class="mini-note"><strong>Effectively once</strong><span>One side effect, despite two execution attempts.</span></div>
+        </div>
+      </div>
+      <aside class="notes">
+        The engine guarantees at-least-once execution. It cannot make an external
+        HTTP call exactly-once. Instead, every step gets a stable key built from
+        the run id, step index, and step name. Handlers pass that key downstream.
+        The payment service checks its map first, so a replay returns the original
+        payment instead of charging again. Compensation uses the same key with a
+        ":compensate" suffix, so undo operations are idempotent too.
+      </aside>
+    </section>
+
+    <!-- 05 · COMPENSATION -->
+    <section class="slide" id="slide-5" data-title="Saga compensation">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">05 · Concept 2 — Saga</div>
+          <h2>Saga: undo completed<br>work in reverse</h2>
+        </div>
+        <p class="lede">
+          A saga replaces one distributed transaction with a sequence of local
+          transactions. When a step fails permanently, the engine compensates the
+          steps that already succeeded — newest first.
+        </p>
+        <div class="saga">
+          <div class="saga-step ok"><span class="step-num">1</span><div><strong>Reserve inventory</strong><small>✓ succeeded</small></div></div>
+          <div class="saga-arrow" aria-hidden="true">→</div>
+          <div class="saga-step ok"><span class="step-num">2</span><div><strong>Process payment</strong><small>✓ succeeded</small></div></div>
+          <div class="saga-arrow" aria-hidden="true">→</div>
+          <div class="saga-step bad"><span class="step-num">3</span><div><strong>Arrange shipping</strong><small>✕ permanent failure</small></div></div>
+        </div>
+        <div class="saga-undo">
+          <div class="undo-card"><span class="undo-icon">↩</span><strong>Release inventory</strong><small>compensated</small></div>
+          <div class="undo-card"><span class="undo-icon">↩</span><strong>Refund payment</strong><small>compensated</small></div>
+          <div class="undo-card empty"><span class="undo-icon">—</span><strong>No compensation</strong><small>failed step</small></div>
+        </div>
+        <div class="reverse-label"><span></span>executed right-to-left<span></span></div>
+        <div class="grid-2">
+          <div class="callout slim">
+            Only <strong>completed</strong> steps are compensated. Steps after the failure are marked <code>skipped</code>. Compensation itself is retried and idempotent.
+          </div>
+          <div class="code-card compact">
+            <div class="code-head"><span class="code-dot red"></span><span class="code-dot amber"></span><span class="code-dot green"></span><span class="code-title">store.ts · beginCompensation()</span></div>
+            <pre><code><span class="kw">SELECT</span> id, step_index <span class="kw">FROM</span> steps
+ <span class="kw">WHERE</span> run_id = ?
+   <span class="kw">AND</span> step_index &lt; ?
+   <span class="kw">AND</span> status = <span class="str">'succeeded'</span>
+ <span class="kw">ORDER BY</span> step_index <span class="kw">DESC</span>;</code></pre>
+          </div>
+        </div>
+      </div>
+      <aside class="notes">
+        This is the saga pattern. There is no distributed transaction across the
+        warehouse, payment, and shipping services. Instead, every completed step
+        has a compensating action. A permanent failure marks later steps skipped,
+        selects the succeeded steps with ORDER BY step_index DESC, and queues them
+        for compensation. The claim query also waits until no later step is still
+        pending, so undo really runs newest-first.
+      </aside>
+    </section>
+
+    <!-- 06 · STEP ANATOMY -->
+    <section class="slide" id="slide-6" data-title="What is a step?">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">06 · Concept 3 — Step</div>
+          <h2>A step is the durable<br>unit of work</h2>
+        </div>
+        <p class="lede">
+          A step has a name, an execute function that performs a side effect, an
+          optional compensate function, and its own retry and timeout policy. Its
+          state is persisted, so it can be retried or undone after a crash.
+        </p>
+        <div class="grid-2">
+          <div class="code-card compact">
+            <div class="code-head"><span class="code-dot red"></span><span class="code-dot amber"></span><span class="code-dot green"></span><span class="code-title">types.ts · StepDefinition</span></div>
+            <pre><code><span class="kw">export interface</span> StepDefinition&lt;Input, Output&gt; {
+  name: <span class="kw">string</span>;
+  execute(ctx: StepContext&lt;Input&gt;): Promise&lt;Output&gt;;
+  compensate?(ctx: StepContext&lt;Input&gt;, output: Output): Promise&lt;<span class="kw">void</span>&gt;;
+  retry?: Partial&lt;RetryPolicy&gt;;
+  timeoutMs?: <span class="kw">number</span>;
+}</code></pre>
+          </div>
+          <div class="stack">
+            <div class="mini-note"><strong>execute</strong><span>Performs the real side effect and receives the stable idempotency key.</span></div>
+            <div class="mini-note"><strong>compensate</strong><span>Undoes the effect if a later step fails. Retried with a <code>:compensate</code> key.</span></div>
+            <div class="mini-note"><strong>retry / timeout</strong><span>Persisted on the step, so in-flight runs keep their policy.</span></div>
+          </div>
+        </div>
+        <div class="timeline">
+          <div class="timeline-line" aria-hidden="true"></div>
+          <article class="t-card">
+            <span class="t-num">1</span>
+            <h3>Claim</h3>
+            <p>Set lease owner + expiry and increment attempts.</p>
+            <code>BEGIN IMMEDIATE</code>
+          </article>
+          <article class="t-card">
+            <span class="t-num">2</span>
+            <h3>Record</h3>
+            <p>Insert an attempt row with worker id and attempt number.</p>
+            <code>attempts: running</code>
+          </article>
+          <article class="t-card accent-card">
+            <span class="t-num">3</span>
+            <h3>Execute</h3>
+            <p>Call the handler. External side effects happen here.</p>
+            <code>await step.execute()</code>
+          </article>
+          <article class="t-card">
+            <span class="t-num">4</span>
+            <h3>Persist</h3>
+            <p>Write the result with a fenced conditional update.</p>
+            <code>lease_owner + attempts</code>
+          </article>
+          <article class="t-card">
+            <span class="t-num">5</span>
+            <h3>Advance</h3>
+            <p>Complete the run or unlock the next step.</p>
+            <code>step_index + 1</code>
+          </article>
+        </div>
+        <div class="callout slim">
+          <span class="callout-kicker">Crash window</span>
+          A crash between <strong>3</strong> and <strong>4</strong> is safe: the step is retried with the same idempotency key, and the downstream effect is deduplicated.
+        </div>
+      </div>
+      <aside class="notes">
+        A step is the durable unit of work. It is not just a function call: it has
+        a persisted status, attempt counters, a lease, a retry policy, an output,
+        and an optional compensation. The engine claims it, records the attempt,
+        executes the side effect, then persists the result with a fenced update.
+        A crash between execute and persist is safe because the retry uses the same
+        idempotency key.
+      </aside>
+    </section>
+
+    <!-- 07 · ARCHITECTURE -->
+    <section class="slide" id="slide-7" data-title="Architecture">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">07 · Architecture</div>
+          <h2>Stateless workers,<br>durable state</h2>
+        </div>
+        <div class="arch">
+          <div class="arch-row arch-row-top">
+            <div class="arch-box">
+              <span class="arch-kicker">clients</span>
+              <span class="arch-title">HTTP / curl</span>
+            </div>
+            <div class="arch-arrow" aria-hidden="true">→</div>
+            <div class="arch-box accent">
+              <span class="arch-kicker">interface</span>
+              <span class="arch-title">Fastify API</span>
+            </div>
+            <div class="arch-arrow" aria-hidden="true">→</div>
+            <div class="arch-box">
+              <span class="arch-kicker">use cases</span>
+              <span class="arch-title">WorkflowService</span>
+            </div>
+          </div>
+          <div class="arch-branch" aria-hidden="true"><span></span><span></span></div>
+          <div class="arch-row arch-row-mid">
+            <div class="arch-box">
+              <span class="arch-kicker">definitions</span>
+              <span class="arch-title">WorkflowRegistry</span>
+              <small>steps · retry policies</small>
+            </div>
+            <div class="arch-box">
+              <span class="arch-kicker">persistence</span>
+              <span class="arch-title">RunStore</span>
+              <small>runs · steps · attempts · events</small>
+            </div>
+          </div>
+          <div class="arch-branch single" aria-hidden="true"><span></span></div>
+          <div class="arch-row">
+            <div class="arch-box engine-box">
+              <div>
+                <span class="arch-kicker">execution</span>
+                <span class="arch-title">WorkflowEngine</span>
+                <small>claim → execute → persist → retry / compensate</small>
+              </div>
+              <div class="engine-loop" aria-hidden="true">↻</div>
+            </div>
+          </div>
+          <div class="db-bar"><span class="db-led"></span> SQLite · WAL · <code>BEGIN IMMEDIATE</code></div>
+        </div>
+        <div class="callout slim">
+          The engine holds no workflow state in memory. Kill it at any point and another worker can continue.
+        </div>
+      </div>
+      <aside class="notes">
+        The API and the engine share only the database. That is what makes the
+        system recoverable: there is no hidden in-memory state to lose. The store
+        is isolated behind a small interface, so a Postgres adapter can replace
+        SQLite without changing the engine.
+      </aside>
+    </section>
+
+    <!-- 08 · DATA MODEL -->
+    <section class="slide" id="slide-8" data-title="Data model">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">08 · Data model</div>
+          <h2>Four tables tell the whole story</h2>
+        </div>
+        <div class="grid-4 data-grid">
+          <article class="data-card">
+            <header><span class="table-name">runs</span><span class="rel">1 : N</span></header>
+            <ul>
+              <li><code>id</code><span>UUID</span></li>
+              <li><code>workflow_name</code><span>definition</span></li>
+              <li><code>status</code><span>lifecycle</span></li>
+              <li><code>input / output</code><span>JSON</span></li>
+              <li><code>idempotency_key</code><span>unique</span></li>
+            </ul>
+          </article>
+          <article class="data-card">
+            <header><span class="table-name">steps</span><span class="rel">1 : N</span></header>
+            <ul>
+              <li><code>step_index</code><span>order</span></li>
+              <li><code>status</code><span>state</span></li>
+              <li><code>attempts</code><span>counter</span></li>
+              <li><code>lease_owner</code><span>worker</span></li>
+              <li><code>next_attempt_at</code><span>backoff</span></li>
+            </ul>
+          </article>
+          <article class="data-card">
+            <header><span class="table-name">attempts</span><span class="rel">1 : N</span></header>
+            <ul>
+              <li><code>kind</code><span>execute / undo</span></li>
+              <li><code>attempt_number</code><span>1-based</span></li>
+              <li><code>worker_id</code><span>owner</span></li>
+              <li><code>status</code><span>outcome</span></li>
+              <li><code>error</code><span>JSON</span></li>
+            </ul>
+          </article>
+          <article class="data-card">
+            <header><span class="table-name">events</span><span class="rel">append-only</span></header>
+            <ul>
+              <li><code>seq</code><span>ordering</span></li>
+              <li><code>type</code><span>audit event</span></li>
+              <li><code>step_id</code><span>optional</span></li>
+              <li><code>data</code><span>JSON</span></li>
+              <li><code>created_at</code><span>timestamp</span></li>
+            </ul>
+          </article>
+        </div>
+        <div class="rel-strip">
+          <span class="rel-node">runs</span><span class="rel-link">1 ── N</span>
+          <span class="rel-node">steps</span><span class="rel-link">1 ── N</span>
+          <span class="rel-node">attempts</span>
+          <span class="rel-sep"></span>
+          <span class="rel-node">runs</span><span class="rel-link">1 ── N</span>
+          <span class="rel-node">events</span>
+        </div>
+        <div class="callout slim">A step transition and its event are written in the <strong>same transaction</strong>.</div>
+      </div>
+      <aside class="notes">
+        The runs table is the aggregate root. Steps are ordered within a run.
+        Attempts give a forensic history of every execution and compensation.
+        Events are the user-facing audit log. The unique index on
+        idempotency_key is what makes duplicate run creation safe.
+      </aside>
+    </section>
+
+    <!-- 09 · LIFECYCLE -->
+    <section class="slide" id="slide-9" data-title="Run lifecycle">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">09 · State machine</div>
+          <h2>Run lifecycle</h2>
+        </div>
+        <div class="state-wrap">
+          <svg class="state-svg" viewBox="0 0 1100 430" role="img" aria-label="Run lifecycle state machine">
+            <defs>
+              <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" class="arrow-head"/>
+              </marker>
+            </defs>
+
+            <rect class="state pending" x="60" y="50" width="190" height="64" rx="14"/>
+            <text class="state-text" x="155" y="89" text-anchor="middle">pending</text>
+
+            <rect class="state running" x="390" y="50" width="190" height="64" rx="14"/>
+            <text class="state-text" x="485" y="89" text-anchor="middle">running</text>
+
+            <rect class="state success" x="820" y="50" width="190" height="64" rx="14"/>
+            <text class="state-text" x="915" y="89" text-anchor="middle">completed</text>
+
+            <rect class="state warn" x="390" y="180" width="190" height="64" rx="14"/>
+            <text class="state-text" x="485" y="219" text-anchor="middle">compensating</text>
+
+            <rect class="state success" x="820" y="180" width="190" height="64" rx="14"/>
+            <text class="state-text" x="915" y="219" text-anchor="middle">compensated</text>
+
+            <rect class="state dead" x="820" y="330" width="190" height="64" rx="14"/>
+            <text class="state-text" x="915" y="369" text-anchor="middle">failed</text>
+
+            <rect class="state muted" x="60" y="330" width="190" height="64" rx="14"/>
+            <text class="state-text" x="155" y="369" text-anchor="middle">cancelled</text>
+
+            <line class="edge" x1="250" y1="82" x2="382" y2="82" marker-end="url(#arrow)"/>
+            <text class="edge-label" x="316" y="68" text-anchor="middle">claim</text>
+
+            <line class="edge" x1="580" y1="82" x2="812" y2="82" marker-end="url(#arrow)"/>
+            <text class="edge-label" x="696" y="68" text-anchor="middle">last step succeeds</text>
+
+            <line class="edge" x1="485" y1="114" x2="485" y2="172" marker-end="url(#arrow)"/>
+            <text class="edge-label side" x="500" y="148">permanent failure</text>
+
+            <line class="edge" x1="580" y1="212" x2="812" y2="212" marker-end="url(#arrow)"/>
+            <text class="edge-label" x="696" y="198" text-anchor="middle">all steps undone</text>
+
+            <path class="edge" d="M 485 244 L 485 362 L 812 362" marker-end="url(#arrow)"/>
+            <text class="edge-label side" x="500" y="300">compensation fails</text>
+
+            <line class="edge" x1="155" y1="114" x2="155" y2="322" marker-end="url(#arrow)"/>
+            <text class="edge-label side" x="168" y="245">cancel</text>
+
+            <text class="state-note" x="60" y="415">cancellation is available from pending or running</text>
+          </svg>
+        </div>
+        <div class="legend">
+          <span><i class="swatch pending"></i>queued</span>
+          <span><i class="swatch running"></i>active</span>
+          <span><i class="swatch success"></i>terminal · success</span>
+          <span><i class="swatch warn"></i>rollback</span>
+          <span><i class="swatch dead"></i>terminal · needs attention</span>
+        </div>
+      </div>
+      <aside class="notes">
+        A run moves forward one step at a time. A permanent step failure switches
+        the run into compensation mode; completed steps are undone in reverse.
+        If a compensation itself fails permanently, the run ends in failed and
+        needs operator attention. Cancellation stops future work but is not a
+        rollback.
+      </aside>
+    </section>
+
+    <!-- 10 · CRASH RECOVERY -->
+    <section class="slide" id="slide-10" data-title="Crash recovery">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">10 · Recovery</div>
+          <h2>When a worker dies</h2>
+        </div>
+        <div class="lanes">
+          <div class="lane-label-col">
+            <span>Worker A</span>
+            <span>Worker B</span>
+            <span class="time-label">time →</span>
+          </div>
+          <div class="lane-body">
+            <div class="lane-row">
+              <div class="lane-event ok">claim<small>lease 30s</small></div>
+              <div class="lane-event run">execute<small>payment API</small></div>
+              <div class="lane-event dead">✕ crash<small>no result saved</small></div>
+              <div class="lane-gap"></div>
+            </div>
+            <div class="lane-row">
+              <div class="lane-event wait">idle<small>lease still valid</small></div>
+              <div class="lane-event warn">reclaim<small>attempt 1 → lease_expired</small></div>
+              <div class="lane-event ok">retry → success<small>same idempotency key</small></div>
+              <div class="lane-gap"></div>
+            </div>
+            <div class="time-axis" aria-hidden="true">
+              <span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+        </div>
+        <div class="grid-3 recovery-notes">
+          <div class="mini-note"><strong>No lost work</strong><span>The step is still <code>running</code> in the database.</span></div>
+          <div class="mini-note"><strong>No duplicate charge</strong><span>The retry reuses the same idempotency key.</span></div>
+          <div class="mini-note"><strong>No manual step</strong><span>Recovery is part of every engine tick.</span></div>
+        </div>
+      </div>
+      <aside class="notes">
+        Leases are the failure detector. A worker that dies stops renewing its
+        lease. When the lease expires, any worker can reclaim the step. We mark
+        the interrupted attempt as lease_expired, then retry with the same key.
+      </aside>
+    </section>
+
+    <!-- 11 · FENCING -->
+    <section class="slide" id="slide-11" data-title="Stale-result fencing">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">11 · Consistency</div>
+          <h2>Zombie workers can't<br>overwrite newer state</h2>
+        </div>
+        <div class="grid-2 fence-grid">
+          <div class="code-card">
+            <div class="code-head"><span class="code-dot red"></span><span class="code-dot amber"></span><span class="code-dot green"></span><span class="code-title">fenced completion</span></div>
+            <pre><code><span class="kw">UPDATE</span> steps
+   <span class="kw">SET</span> status = <span class="str">'succeeded'</span>,
+       output_json = ?
+ <span class="kw">WHERE</span> id = ?
+   <span class="kw">AND</span> status = <span class="str">'running'</span>
+   <span class="kw">AND</span> lease_owner = ?
+   <span class="kw">AND</span> attempts = ?;
+
+<span class="c">-- 0 rows updated → discard result</span></code></pre>
+          </div>
+          <div class="stack">
+            <div class="scenario-row"><span class="scenario-num">1</span><p>Worker A's lease expires while it is still executing.</p></div>
+            <div class="scenario-row"><span class="scenario-num">2</span><p>Worker B reclaims the step and completes it.</p></div>
+            <div class="scenario-row"><span class="scenario-num">3</span><p>Worker A finally returns — and tries to save its result.</p></div>
+            <div class="scenario-row danger"><span class="scenario-num">4</span><p>The guard matches zero rows, so A's stale result is discarded.</p></div>
+          </div>
+        </div>
+        <div class="callout slim">
+          The fencing token is the pair <code>(lease_owner, attempts)</code>. A result is only accepted from the worker that still owns the current attempt.
+        </div>
+      </div>
+      <aside class="notes">
+        Leases alone are not enough. A paused worker can wake up after its lease
+        expired. Every completion is conditional on still owning the lease and
+        still being on the same attempt number. This is a classic fencing-token
+        pattern.
+      </aside>
+    </section>
+
+    <!-- 12 · RETRIES -->
+    <section class="slide" id="slide-12" data-title="Retries & backoff">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">12 · Failure handling</div>
+          <h2>Retries with<br>exponential backoff</h2>
+        </div>
+        <div class="grid-2 retry-grid">
+          <div>
+            <div class="code-card compact">
+              <div class="code-head"><span class="code-dot red"></span><span class="code-dot amber"></span><span class="code-dot green"></span><span class="code-title">retry policy · persisted per step</span></div>
+              <pre><code>{
+  maxAttempts:     <span class="num">4</span>,
+  initialDelayMs:  <span class="num">100</span>,
+  backoffFactor:   <span class="num">2</span>,
+  maxDelayMs:      <span class="num">2000</span>
+}</code></pre>
+            </div>
+            <div class="chip-row">
+              <span class="chip retryable"><i></i>RetryableError → retry</span>
+              <span class="chip permanent"><i></i>PermanentError → compensate</span>
+            </div>
+            <p class="fine-print">Unknown errors are treated as transient. Timeouts are retryable. <code>maxAttempts</code> includes the first attempt.</p>
+          </div>
+          <div class="chart-card">
+            <div class="chart-title">Delay before each attempt</div>
+            <div class="chart">
+              <div class="bar-col"><span class="bar" style="--h: 12%"></span><span class="bar-label">100<small>ms</small></span><span class="bar-x">#2</span></div>
+              <div class="bar-col"><span class="bar" style="--h: 24%"></span><span class="bar-label">200<small>ms</small></span><span class="bar-x">#3</span></div>
+              <div class="bar-col"><span class="bar" style="--h: 48%"></span><span class="bar-label">400<small>ms</small></span><span class="bar-x">#4</span></div>
+              <div class="bar-col"><span class="bar" style="--h: 78%"></span><span class="bar-label">800<small>ms</small></span><span class="bar-x">#5</span></div>
+              <div class="bar-col"><span class="bar dim" style="--h: 100%"></span><span class="bar-label">1600<small>ms</small></span><span class="bar-x">#6</span></div>
+            </div>
+            <div class="chart-foot">delay = min(initial × factor<sup>n−1</sup>, max)</div>
+          </div>
+        </div>
+      </div>
+      <aside class="notes">
+        Retry policy is resolved when the run is created and stored on the step,
+        so changing the workflow definition does not change in-flight runs. The
+        delays are deterministic in this slice; jitter can be added for production.
+      </aside>
+    </section>
+
+    <!-- 13 · DEMO -->
+    <section class="slide" id="slide-13" data-title="Fault injection demo">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">13 · Demo</div>
+          <h2>Try it: inject a failure</h2>
+        </div>
+        <div class="grid-2 demo-grid">
+          <div class="code-card">
+            <div class="code-head"><span class="code-dot red"></span><span class="code-dot amber"></span><span class="code-dot green"></span><span class="code-title">POST /api/workflows/order-processing/runs</span></div>
+            <pre><code>{
+  <span class="key">"input"</span>: {
+    <span class="key">"orderId"</span>: <span class="str">"demo-2"</span>,
+    <span class="key">"customerId"</span>: <span class="str">"c-1"</span>,
+    <span class="key">"items"</span>: [{ <span class="key">"sku"</span>: <span class="str">"sku-1"</span>, <span class="key">"quantity"</span>: <span class="num">1</span> }],
+    <span class="key">"amount"</span>: <span class="num">10</span>,
+    <span class="key">"faults"</span>: {
+      <span class="key">"arrange-shipping"</span>: { <span class="key">"permanent"</span>: <span class="kw">true</span> }
+    }
+  }
+}</code></pre>
+          </div>
+          <div class="result-card">
+            <div class="panel-label">Observed result</div>
+            <div class="result-status"><span class="pill pill-comp">compensated</span><span class="result-note">rollback completed</span></div>
+            <div class="result-steps">
+              <div class="result-step"><span>reserve-inventory</span><span class="tag tag-ok">compensated</span></div>
+              <div class="result-step"><span>process-payment</span><span class="tag tag-ok">compensated</span></div>
+              <div class="result-step"><span>arrange-shipping</span><span class="tag tag-bad">failed</span></div>
+            </div>
+            <div class="event-log">
+              <div><span class="ev ok">✓</span> step.succeeded</div>
+              <div><span class="ev ok">✓</span> step.succeeded</div>
+              <div><span class="ev bad">✕</span> step.failed</div>
+              <div><span class="ev warn">↩</span> step.compensated</div>
+              <div><span class="ev warn">↩</span> step.compensated</div>
+              <div><span class="ev done">■</span> run.compensated</div>
+            </div>
+          </div>
+        </div>
+        <div class="command-row">
+          <code>npm run dev</code>
+          <span>or run the full scripted demo</span>
+          <code>./scripts/demo.sh</code>
+        </div>
+      </div>
+      <aside class="notes">
+        The demo accepts a faults map keyed by step name. Here shipping always
+        fails. The run reserves inventory, charges the card, then compensates by
+        refunding the payment and releasing the reservation. The event log shows
+        the whole story.
+      </aside>
+    </section>
+
+    <!-- 14 · API -->
+    <section class="slide" id="slide-14" data-title="REST API">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">14 · Interface</div>
+          <h2>REST API cheat sheet</h2>
+        </div>
+        <div class="api-table-wrap">
+          <table class="api-table">
+            <thead>
+              <tr><th>Method</th><th>Path</th><th>Purpose</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="method get">GET</span></td><td><code>/health</code></td><td>Liveness probe</td><td>—</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/api/workflows</code></td><td>Registered workflows</td><td>names, versions, steps</td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/workflows/:name/runs</code></td><td>Create a run</td><td><span class="tag tag-ok">202</span> · idempotency replay <span class="tag tag-warn">200</span></td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/api/runs</code></td><td>List runs</td><td><code>status</code>, <code>workflow</code>, <code>limit</code>, <code>offset</code></td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/api/runs/:id</code></td><td>Run + steps</td><td>current state and outputs</td></tr>
+              <tr><td><span class="method get">GET</span></td><td><code>/api/runs/:id/events</code></td><td>Audit log</td><td><code>after</code>, <code>limit</code></td></tr>
+              <tr><td><span class="method post">POST</span></td><td><code>/api/runs/:id/cancel</code></td><td>Cancel a run</td><td><span class="tag tag-ok">202</span> · <span class="tag tag-bad">409</span> if finished</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="api-foot">
+          <div><span class="panel-label">Create-run body</span><code>{ input, idempotencyKey? }</code></div>
+          <div><span class="panel-label">Errors</span><code>400 validation · 404 not found · 409 conflict</code></div>
+        </div>
+      </div>
+      <aside class="notes">
+        The API is intentionally thin. Creating a run only writes the run and its
+        steps; the background worker picks it up. That separation is what allows
+        the API and worker to run as separate processes.
+      </aside>
+    </section>
+
+    <!-- 15 · VERIFICATION -->
+    <section class="slide" id="slide-15" data-title="Verification">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">15 · Verification</div>
+          <h2>Verified behavior</h2>
+        </div>
+        <div class="stats-row">
+          <div class="stat"><strong>25</strong><span>automated tests</span></div>
+          <div class="stat"><strong>4</strong><span>test files</span></div>
+          <div class="stat"><strong>0</strong><span>TypeScript errors</span></div>
+          <div class="stat"><strong>100%</strong><span>core paths covered</span></div>
+        </div>
+        <div class="check-grid">
+          <div class="check-item"><span>✓</span>Happy-path execution &amp; persisted outputs</div>
+          <div class="check-item"><span>✓</span>Transient retry without double charge</div>
+          <div class="check-item"><span>✓</span>Retry exhaustion → reverse compensation</div>
+          <div class="check-item"><span>✓</span>Permanent error skips retries</div>
+          <div class="check-item"><span>✓</span>Compensation failure → <code>failed</code></div>
+          <div class="check-item"><span>✓</span>Cancellation before &amp; during execution</div>
+          <div class="check-item"><span>✓</span>Lease expiry recovery after a crash</div>
+          <div class="check-item"><span>✓</span>Stale result discarded by fencing</div>
+          <div class="check-item"><span>✓</span>Step timeouts</div>
+          <div class="check-item"><span>✓</span>Idempotency replay (service + HTTP)</div>
+          <div class="check-item"><span>✓</span>Persistence across a real DB reopen</div>
+          <div class="check-item"><span>✓</span>Concurrent processing of multiple runs</div>
+        </div>
+        <div class="terminal">
+          <div class="terminal-head"><span class="code-dot red"></span><span class="code-dot amber"></span><span class="code-dot green"></span><span>terminal</span></div>
+          <pre><code><span class="prompt">$</span> npm run typecheck && npm test
+
+ Test Files  <span class="ok-text">4 passed</span> (4)
+      Tests  <span class="ok-text">25 passed</span> (25)</code></pre>
+        </div>
+      </div>
+      <aside class="notes">
+        The tests are not only happy-path unit tests. They simulate a worker crash
+        by claiming a step and advancing the clock past the lease, they test
+        stale-result fencing directly against the store, and they reopen a real
+        SQLite file to prove persistence.
+      </aside>
+    </section>
+
+    <!-- 16 · TRADE-OFFS -->
+    <section class="slide" id="slide-16" data-title="Trade-offs & next steps">
+      <div class="slide-inner">
+        <div class="slide-head">
+          <div class="eyebrow">16 · Engineering judgment</div>
+          <h2>Trade-offs &amp; next steps</h2>
+        </div>
+        <div class="grid-2 tradeoff-grid">
+          <article class="card tradeoff">
+            <div class="card-tag">Deliberate for this slice</div>
+            <h3>Scope choices</h3>
+            <ul class="arrow-list">
+              <li><strong>SQLite</strong> — zero-ops durability; one writer at a time.</li>
+              <li><strong>In-memory adapters</strong> — demo services reset on restart.</li>
+              <li><strong>Version recorded, not enforced</strong> — definition evolution is future work.</li>
+              <li><strong>Cancellation ≠ rollback</strong> — stops work, does not undo it.</li>
+            </ul>
+          </article>
+          <article class="card tradeoff">
+            <div class="card-tag accent">Roadmap</div>
+            <h3>Where it goes next</h3>
+            <ul class="arrow-list">
+              <li><strong>Postgres adapter</strong> + Docker Compose.</li>
+              <li><strong>Metrics &amp; dashboard</strong> for run health.</li>
+              <li><strong>Dead-letter queue</strong> and manual retry for failed runs.</li>
+              <li><strong>Parallel fan-out</strong>, child workflows, delayed steps.</li>
+            </ul>
+          </article>
+        </div>
+        <div class="callout">
+          The interesting part is not the happy path — it is the explicit treatment of every crash window.
+        </div>
+      </div>
+      <aside class="notes">
+        I want to be honest about scope. SQLite and in-memory adapters are
+        appropriate for a verification project, not for production scale. The
+        important architectural boundary is the store interface and the
+        stateless engine; those are what a production version would build on.
+      </aside>
+    </section>
+
+    <!-- 17 · CLOSING -->
+    <section class="slide" id="slide-17" data-title="Questions">
+      <div class="slide-inner closing-slide">
+        <div class="eyebrow">17 · Thank you</div>
+        <h1 class="closing-title">Questions?</h1>
+        <p class="lede">Durable state. Safe retries. Reversible workflows.</p>
+        <div class="closing-grid">
+          <div class="closing-card">
+            <span class="panel-label">Run it</span>
+            <code>npm install</code>
+            <code>npm run dev</code>
+            <code>./scripts/demo.sh</code>
+          </div>
+          <div class="closing-card">
+            <span class="panel-label">Read it</span>
+            <code>README.md</code>
+            <code>src/engine/engine.ts</code>
+            <code>src/engine/store.ts</code>
+            <code>tests/</code>
+          </div>
+        </div>
+        <div class="title-foot">
+          <span class="dot"></span>
+          TypeScript · Node.js · SQLite · Fastify · Vitest
+        </div>
+      </div>
+      <aside class="notes">
+        Thank you. The demo and the test suite are the best places to continue
+        the discussion. The README documents the API, configuration, and the
+        limitations of this slice.
+      </aside>
+    </section>
+
+  </main>
+
+  <nav class="controls" aria-label="Presentation controls">
+    <button class="control-btn" id="btn-prev" type="button" title="Previous slide (←)" aria-label="Previous slide">←</button>
+    <span class="slide-counter" id="slide-counter">1 / 17</span>
+    <button class="control-btn" id="btn-next" type="button" title="Next slide (→)" aria-label="Next slide">→</button>
+    <span class="control-sep" aria-hidden="true"></span>
+    <button class="control-btn text-btn" id="btn-notes" type="button" title="Toggle speaker notes (N)">Notes</button>
+    <button class="control-btn text-btn" id="btn-doc" type="button" title="Toggle document view (D)">Document</button>
+    <button class="control-btn text-btn" id="btn-full" type="button" title="Fullscreen (F)">Full</button>
+  </nav>
+
+  <div class="hint" id="hint">← → navigate · N notes · D document view · F fullscreen</div>
+
+  <script src="script.js"></script>
+</body>
+</html>
